@@ -22,7 +22,6 @@ namespace hypercube
 		bool widthHeight;
 		bool firstSecond; //which half are we cutting off.
 
-		public castMesh canvas;
 
 		void Start()
 		{
