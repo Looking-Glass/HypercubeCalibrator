@@ -20,7 +20,7 @@ namespace hypercube
 		//other menu stuff
 
 
-		[MenuItem("Hypercube/Copy current slice calibration", false, 300)]  //# is prio
+/*		[MenuItem("Hypercube/Copy current slice calibration", false, 300)]  //# is prio
 		public static void openCubeWindowPrefs()
 		{
 			fineCalibrator c = GameObject.FindObjectOfType<fineCalibrator>();
@@ -30,7 +30,7 @@ namespace hypercube
 		else
 		Debug.LogWarning("No calibrator was found, and therefore no copying occurred.");
 		}
-
+*/
 
 		#endif
 	}

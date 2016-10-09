@@ -5,13 +5,11 @@ namespace hypercube
 {
 	public class vertexCalibrator : calibrator {
 
-		public Material dotMaterial;
+		[Tooltip("What are the dimensions of the LED sensor array")]
+		public int xArticulation = 3;
+		public int yArticulation = 3;
 
-		public int xArticulation;
-		public int yArticulation;
-
-		public WebCamTexture cam; //TEMP
-		public Material aMaterial;
+		SerialController serial;
 		public float threshold = .7f;
 
 		public Material displayMat;
@@ -24,62 +22,61 @@ namespace hypercube
 		bool widthHeight;
 		bool firstSecond; //which half are we cutting off.
 
-		int frameDelay = 0; //a way to delay the test to check the endoscope since its super slow
+		public castMesh canvas;
+
 		void Start()
 		{
-			cam = new WebCamTexture ();
-			aMaterial.SetTexture ("_MainTex", cam);
-			cam.Play ();
-
 			assignNewDisplayTexture ();
+
+			//set up comm to our light sensors in the hardware
+			SerialController serial = gameObject.AddComponent<SerialController>();
+			serial.portName = getPortName();
+			serial.reconnectionDelay = 500;
+			serial.maxUnreadMessages = 100;
+			serial.maxFailuresAllowed = 3;
+			serial.enabled = true;	
+
+			//dataFileDict vars = canvas.GetComponent<dataFileDict> ();
 		}
 
-		void OnValidate()
+		static string getPortName()
 		{
-			reset ();
+			string[] allSerialPorts = hypercube.input.getPortNames ();
+			foreach (string n in allSerialPorts) 
+			{
+				if (n.Contains ("usbmodem")) //TEMP! turn this into the real hardware name, not default arduino mega name!
+					return n;
+			}
+			return "NOT FOUND!";
 		}
-
-		public void reset()
-		{
-			if (!dotMaterial)
-				return;
 			
-			dotMaterial.mainTextureScale = new Vector2 (xArticulation, yArticulation);
-			canvas.updateMesh (); //TODO really we only need to update the materials here.
-		}
+
 
 		public override Material[] getMaterials ()
 		{
 			Material[] mats = new Material[canvas.getSliceCount()];
 			for(int i = 0; i < mats.Length; i ++)
 			{
-				mats [i] = dotMaterial;
+				mats [i] = displayMat;
 			}
 			return mats;
 		}
 
 		void Update()
 		{
-			if (!cam.didUpdateThisFrame)
-				return;
-			frameDelay++;
 
-			if (frameDelay < 10)
-				return;
-			frameDelay = 0;
+			//do we see a lit up screen? 
+			string[] data = serial.ReadSerialMessage().Split(' ');
 
-			//do we see a lit up screen?   TODO REPLACE THIS WITH THE SERIAL INPUT
-			Color centerColor = cam.GetPixel(cam.width/2, cam.height/2);
-			float c = (centerColor.r + centerColor.g + centerColor.b) / 3f;
 			bool result = false;
-			if (c > threshold)
-				result = true;
+			//if (c > threshold)
+			//	result = true;
 
-			takeTestStep (result);
+			takeHalvingTestStep (result);
 		}
 
 
-		void takeTestStep(bool lastStepSuccess)
+		void takeHalvingTestStep(bool lastStepSuccess)
 		{
 			if (lastStepSuccess) 
 			{
@@ -141,7 +138,7 @@ namespace hypercube
 			fill (currentStepValues);
 		}
 
-		void startNewTest()
+		void startNewHalvingTest()
 		{
 			lastSuccessfulStepValues = currentStepValues = new Vector4 (0f, 0f, textureRes, textureRes);
 		}
@@ -156,7 +153,7 @@ namespace hypercube
 			if (_w < successPoint || _h < successPoint) //we found our point.
 			{
 				//SUCCESS!
-				startNewTest ();
+				startNewHalvingTest ();
 				return;
 			}
 
