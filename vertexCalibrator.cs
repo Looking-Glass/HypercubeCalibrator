@@ -5,7 +5,7 @@ namespace hypercube
 {
 	public class vertexCalibrator : calibrator {
 
-		[Tooltip("What are the dimensions of the LED sensor array")]
+		[Tooltip("How many sensors in the LED sensor array")]
 		public int xArticulation = 3;
 		public int yArticulation = 3;
 
