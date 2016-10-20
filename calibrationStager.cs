@@ -100,7 +100,8 @@ namespace hypercube
             {
                 foreach (GameObject o in s.activeObjects)
                 {
-                    o.SetActive(false);
+                    if (o)
+                        o.SetActive(false);
                 }
             }
 

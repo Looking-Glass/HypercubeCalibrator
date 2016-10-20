@@ -1,6 +1,8 @@
 ﻿using UnityEngine;
 using System.Collections;
 
+//a base class for an autocalibrator state
+
 namespace hypercube
 {
     public class autoCalibratorModule

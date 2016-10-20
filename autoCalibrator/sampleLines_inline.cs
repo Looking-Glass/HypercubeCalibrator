@@ -5,44 +5,50 @@ namespace hypercube
     public class sampleLines_inline : autoCalibratorModule
     {
 
-        const float lineThickness = 5f;
+        float lineSpeed = 1f;
+        float lineThickness = 30f;
+        float pos;
 
         bool horz = true;
 
         public override void start(autoCalibrator a)
         {
-            a.horizontal.sizeDelta = new Vector2(0f, lineThickness);
-            a.horizontal.position = new Vector3(0f, -lineThickness, 0f);
+            float screenW = 0f;
+            float screenH = 0f;
+            a.canvas.getScreenDims(ref screenW, ref screenH);
 
-            a.vertical.sizeDelta = new Vector2(lineThickness, 0f);
-            a.vertical.position = new Vector3(-lineThickness, 0f, 0f);
+            pos = screenH;
+            horz = true;
+            a.setLine(0f,0f, 1f,0f, true, false); //the line is off.
         }
 
         public override void update(autoCalibrator a)
         {
+
             float screenW = 0f;
             float screenH = 0f;
             a.canvas.getScreenDims(ref screenW, ref screenH);
 
             if (horz)
             {
-                Vector3 h = a.horizontal.position;
-                h.y += 1f;
-                a.horizontal.position = h;
+                pos -= lineSpeed;
+                a.setLine(0f, pos, screenW, lineThickness, horz);
 
-                if (h.y > screenH) 
+                if (pos < -lineThickness)
+                {
                     horz = false;
+                    pos = screenW;
+                }
+                   
             }
             else
             {
-                Vector3 v = a.vertical.position;
-                v.x += 1f;
+                pos -= lineSpeed;
+                a.setLine(pos, 0f,lineThickness, screenH, horz);
 
-                if (v.x > screenW)
-                    return;  //TODO end this module
-
-                a.vertical.position = v;
-
+                if (pos < -lineThickness)
+                    start(a); //temp
+                //    return;  //TODO end this module
 
             }
 
