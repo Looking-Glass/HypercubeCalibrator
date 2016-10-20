@@ -18,6 +18,19 @@ namespace hypercube
 		}
 
 
-		#endif
-	}
+#endif
+
+        [MenuItem("Hypercube/TEST DATA", false, 51)]
+        public static void testData()
+        {
+
+            float[] output = autoCalibrator.getPeaksFromData(7, 60, new int[0]);
+            string s = "";
+            foreach (float d in output)
+            {
+                s += d + "   ";
+            }
+            Debug.Log(s);
+        }
+    }
 }
