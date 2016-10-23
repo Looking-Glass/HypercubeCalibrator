@@ -5,8 +5,10 @@ using System.Collections;
 
 namespace hypercube
 {
-    public class autoCalibratorModule
+    public abstract class autoCalibratorModule
     {
+        public abstract float getRelevantValue();
+
         public virtual void start(autoCalibrator a)
         { }
 

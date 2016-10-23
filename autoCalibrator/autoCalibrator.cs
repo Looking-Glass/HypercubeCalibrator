@@ -1,6 +1,7 @@
 ﻿using UnityEngine;
 using System.Collections;
 using System.Collections.Generic;
+using System;
 
 
 //this autocalibrator is a state machine
@@ -12,6 +13,78 @@ using System.Collections.Generic;
 
 namespace hypercube
 {
+
+    public class sensorData
+    {
+        List<int> recordedData;
+        List<float> pixel;
+        List<float> timeRecorded;
+        public sensorData()
+        {
+            recordedData = new List<int>();
+            pixel = new List<float>();
+            timeRecorded = new List<float>();
+        }
+        
+        public void addDataPoint(int data, float pixelValue)
+        {
+            recordedData.Add(data);
+            pixel.Add(pixelValue);
+            timeRecorded.Add(Time.timeSinceLevelLoad);
+        }
+
+        public int size
+        {
+            get
+            {
+                return recordedData.Count;
+            }
+        }
+
+        public int[] getAllData()
+        {
+            return recordedData.ToArray();
+        }
+
+        public int getData(int element)
+        {
+            if (element >= recordedData.Count)
+                return 0;
+            return recordedData[element];
+        }
+        public float getPixel(int element)
+        {
+            if (element >= pixel.Count)
+                return -999f;
+            return pixel[element];
+        }
+        public float getTime(int element)
+        {
+            if (element >= timeRecorded.Count)
+                return 0f;
+            return timeRecorded[element];
+        }
+
+        public void printData(string labelString) //for debug use
+        {
+            string output = labelString + ":\n";
+            for (int i = 0; i < recordedData.Count; i++)
+            {
+                output +=  recordedData[i] + ", ";
+            }
+            Debug.Log(output);
+        }
+        public void printCSV(string outPath) //for debug use.
+        {
+            string output = "";
+            for (int i = 0; i < recordedData.Count; i++)
+            {
+                output += pixel[i] +","+ recordedData[i] +"\n"; 
+            }
+            System.IO.File.WriteAllText(outPath, output);
+            Debug.Log("Wrote data to CSV: " + outPath);
+        }
+    }
 
     public class autoCalibrator : MonoBehaviour
     {
@@ -36,6 +109,8 @@ namespace hypercube
         //modules
         sampleLines_inline inline;
 
+        sensorData[] records;
+
         // Use this for initialization
         void Awake()
         {
@@ -56,8 +131,33 @@ namespace hypercube
 
             //dataFileDict vars = canvas.GetComponent<dataFileDict> ();
 
+            records = new sensorData[xArticulation * yArticulation];
+            resetCollectedData();
         }
 
+        public sensorData getRecord(int x, int y)
+        {
+            if (x >= xArticulation)
+                return null;
+            if (y >= yArticulation)
+                return null;
+
+            //the records are stored as (in a 3x3 example)  x0y0 x1y0 x2y0 x0y1 x1y1 x2y1 x0y2 x1y2 x2y2
+            int i = (y * xArticulation) + x;
+
+            if (i >= records.Length)
+                return null;
+
+            return records[i];
+        }
+
+        public void resetCollectedData()
+        {
+            for (int x = 0; x < records.Length; x++)
+            {
+                records[x] = new sensorData();
+            }
+        }
 
         static string getPortName()
         {
@@ -84,36 +184,27 @@ namespace hypercube
         // Update is called once per frame
         void Update()
         {
-            if (currentModule != null)
-                currentModule.update(this);
-
             if (!serial)
                 return;
 
             //do we see a lit up screen? We only care about the most recent message.
             string data = serial.ReadSerialMessage();
-            string lastData = null;
             if (data == null) // not data this frame.
                 return;
 
-            lastData = data;
-            while (data != null)
-            {              
-                data = serial.ReadSerialMessage();
-                if (data != null)
-                    lastData = data;
-            }
+            string[] arr = data.Split(' ');
 
-            string[] arr = lastData.Split(' ');
+            if (arr.Length != xArticulation * yArticulation)
+                Debug.LogError("Received " + arr.Length + " elements of data from the calibration hardware. This does not match the given " + xArticulation + " x " + yArticulation + " description of the sensor array.");
 
-            for(int i = 0; i < arr.Length; i ++)
+
+            for (int x = 0; x < records.GetLength(0); x++)
             {
-                float v = dataFileDict.stringToFloat(arr[i], 0f);
-                if (v > threshold)
-                    indicators[i].SetActive(true);
-                else
-                    indicators[i].SetActive(false);
+                records[x].addDataPoint(dataFileDict.stringToInt(arr[x], 0), currentModule.getRelevantValue());
             }
+
+            if (currentModule != null)
+                currentModule.update(this);  //the module only gets updated after we get input from the serial
         }
 
         public void setLine(float posX, float posY, float w, float h, bool horizontal, bool onOff = true)
@@ -148,17 +239,29 @@ namespace hypercube
             return new Vector3((2f * x * pixelX * aspectRatio) - (pixelX * screenX * aspectRatio), 1f - (y * pixelY * 2f), 0f);
         }
 
+        /// <param name="minPeakAmplitude">The minimum 'height' a peak should be.</param>
+        /// <param name="minPeakFreq">The minimum 'width' of expected peaks. This will keep it from returning noise as peaks.</param>
+        public float[] findDataPeaks(int minPeakAmplitude, int minPeakFreq, int expectedPeaks, int x, int y)
+        {
+            sensorData d = getRecord(x,y);
+            if (d == null)
+                return null;
+
+            return getPeaksFromData(minPeakAmplitude, minPeakFreq, expectedPeaks, d.getAllData());
+        }
+
         /// <summary>
         /// This method will extract 'peaks' from noisy data, returning the positions in the array where it thinks the peaks occurred.
         /// Note that the returned values are floats: It uses averages to figure out where it thinks the true peak is which may lie 'in between' the given data points.
+        /// finally, it will return the given number of expected peaks, with 0 as the value for any peeks it could not determine.
         /// </summary>
         /// <param name="minPeakAmplitude">The minimum 'height' a peak should be.</param>
         /// <param name="minPeakFreq">The minimum 'width' of expected peaks. This will keep it from returning noise as peaks.</param>
         /// <param name="data">The data to obtain the peaks from.</param>
         /// <returns></returns>
-        public static float[] getPeaksFromData(int minPeakAmplitude, int minPeakFreq, int[] data)
+        public static float[] getPeaksFromData(int minPeakAmplitude, int minPeakFreq, int expectedPeaks, int[] data)
         {
-            data = new int[]
+            data = new int[] //600ms
             {
                 75, 76, 75, 74, 76, 74, 77, 77, 79, 79, 80, 80, 81, 81, 80, 80, 80, 82, 82, 81, 83, 83, 84, 84, 82,
                 83, 85, 82, 83, 84, 86, 85, 85, 83, 84, 84, 81, 78, 77, 78, 78, 77, 78, 76, 75, 75, 79, 79, 76, 74,
@@ -206,8 +309,152 @@ namespace hypercube
                 64, 65, 65, 65, 65, 65, 64, 65, 64, 65, 63, 64, 64, 64, 64, 64, 62, 61, 63, 62, 59, 59, 57, 58
             };
 
+            data = new int[] //200 ms
+            {
+                93, 93, 92, 93, 94, 94, 94, 95, 95, 95, 94, 95, 96, 96, 96, 95, 95, 95, 95, 96, 95, 96, 96, 96, 96, 97, 97, 96, 96, 97, 97, 96, 97, 96, 96, 96, 96, 95, 95, 94,
+                95, 94, 95, 95, 95, 95, 95, 95, 95, 95, 95, 95, 95, 94, 94, 93, 93, 94, 94, 96, 96, 95, 94, 94, 95, 95, 95, 95, 95, 95, 95, 95, 94, 94, 95, 95, 95, 95, 95, 93,
+                90, 87, 86, 85, 86, 86, 87, 87, 88, 88, 87, 87, 87, 87, 88, 88, 87, 87, 88, 88, 88, 87, 88, 87, 87, 87, 86, 87, 86, 87, 88, 92, 95, 95, 95, 96, 97, 96, 96, 96,
+                96, 97, 97, 98, 98, 98, 98, 98, 98, 99, 100, 100, 100, 101, 99, 99, 99, 100, 100, 100, 100, 100, 100, 99, 99, 99, 98, 98, 98, 98, 97, 97, 96, 97, 97, 96, 96, 96,
+                96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 95, 96, 96, 97, 97, 96, 97, 97, 97, 97, 97, 96, 96, 97, 97, 98, 98, 98, 97, 97, 98, 97, 98, 98, 98, 98, 99, 99, 98, 98,
+                99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 98, 98, 98, 99, 98, 99, 99, 99, 99, 99, 99, 99, 99, 100, 99, 99, 100, 100, 101, 101, 101, 101, 102, 101, 102, 102,
+                103, 103, 103, 104, 104, 103, 104, 104, 105, 104, 105, 105, 105, 105, 105, 105, 105, 104, 104, 103, 103, 102, 102, 101, 101, 100, 100, 101, 100, 100, 100, 100,
+                99, 99, 99, 99, 99, 99, 99, 99, 100, 100, 99, 99, 100, 99, 99, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100,
+                100, 100, 101, 101, 100, 101, 101, 101, 101, 101, 101, 100, 100, 100, 100, 101, 101, 101, 101, 101, 101, 102, 102, 103, 102, 103, 102, 102, 103, 103, 103, 103,
+                103, 103, 104, 103, 103, 104, 105, 105, 105, 105, 106, 106, 107, 107, 107, 107, 108, 109, 109, 109, 110, 109, 109, 109, 109, 108, 107, 108, 107, 107, 106, 106,
+                106, 105, 104, 102, 102, 102, 102, 102, 102, 102, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 100, 100, 101, 101, 100, 101,
+                101, 101, 101, 101, 101, 101, 101, 101, 100, 100, 101, 101, 101, 101, 101, 102, 102, 102, 101, 101, 100, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 102, 102, 102, 102, 102, 101, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102, 103, 103, 103, 104, 104, 104, 105, 105, 105, 105, 106, 107,
+                107, 108, 107, 108, 108, 108, 108, 107, 107, 106, 106, 105, 104, 104, 103, 103, 102, 103, 102, 102, 102, 101, 101, 101, 100, 101, 101, 101, 101, 101, 101, 101,
+                100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 101, 101, 101, 100, 101, 101, 101, 100, 101, 101, 100, 101, 101, 101,
+                101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 102, 102, 102, 101, 101, 102, 102, 102, 101, 102, 102, 102, 102, 102, 102, 102, 102, 102, 101, 102, 102,
+                102, 102, 103, 103, 103, 103, 103, 103, 105, 105, 105, 106, 106, 107, 107, 107, 108, 108, 108, 107, 107, 107, 106, 105, 105, 104, 103, 103, 102, 102, 102, 102,
+                102, 101, 101, 101, 101, 101, 100, 100, 101, 101, 101, 100, 101, 100, 101, 101, 101, 100, 101, 100, 100, 101, 100, 100, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 100, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101, 101,
+                101, 102, 101, 102, 102, 102, 102, 101, 102, 101, 102, 101, 101, 102, 103, 102, 103, 104, 104, 105, 105, 106, 106, 107, 108, 109, 109, 110, 110, 111, 112, 112,
+                112, 111, 111, 109, 109, 108, 107, 106, 105, 104, 104, 103, 103, 102, 102, 101, 101, 100, 100, 100, 100, 100, 100, 100, 99, 100, 100, 100, 99, 99, 99, 99, 98,
+                98, 99, 98, 98, 98, 98, 97, 98, 98, 97, 97, 97, 96, 97, 97, 96, 96, 96, 95, 96, 95, 96, 96, 95, 96, 95, 96, 96, 96, 96, 96, 96, 96, 96, 95, 96, 95, 95, 96, 95,
+                95, 96, 96, 96, 96, 97, 97, 97, 96, 97, 97, 97, 97, 98, 98, 98, 98, 99, 98, 99, 99, 99, 100, 101, 101, 102, 102, 103, 103, 105, 105, 106, 107, 107, 108, 108,
+                108, 108, 107, 107, 105, 105, 104, 104, 103, 103, 102, 101, 100, 100, 100, 99, 99, 99, 99, 99, 99, 99, 98, 99, 99, 98, 99, 98, 99, 99, 99, 98, 98, 98, 99, 99,
+                99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 100, 100, 100, 99, 100, 100, 100, 100, 100, 99, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 99,
+                99, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 99, 99, 100, 99, 100, 99, 100, 100, 100, 100, 100, 100, 101, 100, 101, 102, 102, 103, 104, 104, 105, 106,
+                107, 108, 110, 110, 111, 112, 112, 112, 111, 110, 109, 107, 107, 106, 105, 103, 102, 101, 101, 100, 100, 99, 99, 98, 99, 98, 99, 98, 98, 98, 98, 98, 98, 97, 98,
+                97, 98, 98, 98, 98, 98, 98, 97, 98, 97, 98, 98, 98, 97, 98, 99, 99, 99, 99, 99, 98, 99, 99, 99, 99, 99, 99, 99, 99, 98, 98, 98, 97, 98, 98, 98, 97, 97, 97, 97,
+                98, 98, 98, 97, 98, 98, 97, 97, 97, 98, 97, 97, 98, 98, 97, 97, 97, 97, 97, 98, 98, 98, 97, 98, 98, 98, 99, 99, 100, 100, 101, 101, 102, 104, 104, 106, 107, 108,
+                109, 109, 110, 111, 111, 110, 109, 107, 106, 105, 103, 102, 101, 100, 99, 99, 98, 97, 97, 96, 96, 96, 95, 95, 95, 95, 94, 94, 94, 95, 95, 95, 95, 95, 95, 95, 95,
+                95, 94, 95, 95, 94, 94, 94, 94, 95, 95, 94, 94, 95, 94, 94, 94, 95, 95, 95, 95, 94, 94, 94, 94, 95, 94, 93, 94, 94, 93, 93, 93
+            };
 
-            //first, we will filter out what parts of the data count as a part of a peak.
+            data = new int[] //100
+            {
+44, 45, 45, 45, 46, 45, 46, 45, 46, 45, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 47, 46, 47, 46, 46, 47, 47, 46, 47, 47, 47, 47, 46, 46, 47, 46, 46, 46,
+46, 46, 45, 46, 46, 46, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 46, 46, 46, 46, 46, 45, 45, 45, 46, 46, 46, 45, 46, 45, 46, 46, 46, 45, 46,
+45, 46, 46, 46, 46, 45, 46, 46, 46, 46, 45, 46, 45, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 47, 47, 47, 46, 47, 46, 47, 46, 46, 47,
+46, 47, 47, 47, 48, 47, 47, 47, 48, 48, 48, 47, 48, 48, 49, 48, 49, 48, 49, 49, 49, 49, 49, 49, 49, 48, 48, 48, 47, 48, 48, 48, 47, 47, 46, 47, 47, 46, 47, 47,
+47, 47, 46, 46, 46, 47, 47, 47, 47, 47, 47, 47, 47, 46, 47, 47, 46, 46, 47, 47, 47, 47, 47, 47, 46, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 48, 47, 48, 48, 47,
+48, 47, 47, 47, 48, 48, 47, 47, 48, 48, 47, 48, 48, 48, 47, 48, 48, 48, 48, 48, 47, 48, 47, 48, 48, 48, 48, 48, 48, 47, 47, 48, 48, 48, 48, 48, 49, 49, 48, 49,
+49, 49, 50, 50, 50, 50, 50, 50, 50, 50, 50, 49, 48, 48, 48, 47, 47, 47, 47, 47, 47, 47, 46, 46, 46, 46, 45, 46, 46, 46, 45, 46, 46, 46, 46, 46, 47, 47, 47, 47,
+47, 47, 47, 47, 47, 47, 46, 46, 47, 47, 47, 47, 47, 47, 47, 47, 48, 48, 47, 47, 48, 48, 47, 48, 47, 48, 48, 48, 47, 48, 47, 47, 47, 48, 48, 48, 48, 48, 47, 48,
+47, 47, 47, 48, 48, 47, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 49, 49, 49, 49, 48, 49, 50, 50, 50, 50, 51, 51, 51, 51, 51, 52, 52, 52, 52, 51, 51, 51,
+50, 50, 50, 49, 49, 48, 48, 47, 48, 47, 47, 47, 46, 47, 46, 45, 46, 45, 45, 45, 46, 46, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 44, 45, 45, 44, 45, 45,
+45, 45, 45, 44, 45, 45, 45, 45, 45, 45, 45, 44, 45, 45, 44, 45, 45, 45, 44, 44, 45, 45, 44, 44, 45, 44, 44, 45, 45, 45, 45, 44, 45, 45, 45, 45, 45, 45, 45, 45,
+45, 45, 45, 45, 45, 46, 46, 46, 46, 46, 46, 46, 47, 46, 47, 47, 48, 47, 48, 48, 49, 49, 49, 49, 49, 49, 48, 49, 49, 48, 48, 48, 47, 47, 46, 47, 46, 46, 46, 46,
+46, 46, 45, 45, 45, 45, 45, 45, 45, 45, 44, 45, 44, 45, 45, 45, 45, 45, 45, 45, 45, 45, 44, 45, 45, 45, 44, 44, 45, 44, 45, 44, 45, 44, 44, 44, 44, 45, 44, 44,
+44, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 44, 44, 44, 44, 44, 44, 45, 44, 45, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44,
+45, 45, 44, 45, 45, 44, 44, 45, 45, 46, 45, 46, 46, 45, 45, 46, 46, 45, 44, 45, 44, 43, 44, 44, 43, 43, 42, 43, 43, 42, 41, 42, 41, 42, 42, 41, 42, 42, 41, 41,
+42, 42, 42, 41, 42, 42, 42, 42, 42, 42, 43, 43, 42, 43, 43, 42, 43, 42, 42, 42, 43, 43, 43, 43, 42, 42, 42, 42, 42, 43, 43, 42, 43, 43, 43, 43, 43, 43, 43, 43,
+43, 43, 42, 42, 43, 43, 43, 43, 42, 42, 43, 43, 43, 43, 43, 43, 43, 43, 43, 43, 44, 43, 44, 44, 44, 44, 44, 44, 44, 45, 44, 44, 46, 46, 46, 47, 46, 47, 48, 48,
+48, 48, 48, 47, 48, 47, 46, 46, 46, 45, 43, 44, 42, 42, 42, 42, 42, 41, 40, 41, 41, 40, 40, 40, 40, 40, 39, 40, 38, 39, 38, 38, 38, 39, 39, 39, 39, 38, 38, 38,
+37, 37, 38, 37, 38, 38, 37, 38, 37, 37, 38, 38, 38, 37, 37, 38, 37, 38, 38, 38, 38, 38, 37, 38, 37, 37, 37, 37, 37, 37, 37, 37, 37, 36, 37, 37, 36, 37, 36, 38,
+38, 38, 38, 37, 37, 38, 37, 38, 37, 38, 38, 38, 37, 38, 38, 39, 39, 39, 39, 40, 40, 40, 40, 41, 41, 42, 42, 43, 42, 43, 43, 44, 43, 43, 42, 42, 42, 41, 41, 41,
+40, 40, 40, 39, 39, 39, 39, 38, 38, 39, 39, 39, 39, 39, 39, 38, 39, 39, 38, 38, 38, 39, 39, 39, 39, 39, 39, 39, 39, 40, 40, 40, 40, 39, 40, 40, 40, 39, 40, 40,
+40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 39, 39, 39, 40, 40, 40, 39, 40, 40, 39, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 41, 41, 41, 41, 40, 41,
+41, 40, 41, 40, 41, 41, 41, 42, 42, 43, 43, 44, 44, 45, 45, 46, 46, 46, 48, 48, 48, 48, 48, 47, 47, 46, 46, 45, 44, 44, 44, 43, 43, 43, 42, 42, 42, 41, 41, 41,
+41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 42, 41, 41, 41, 41, 41, 41, 41, 42, 42, 42, 41, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+41, 41, 42, 42, 42, 42, 41, 42, 41, 42, 41, 42, 42, 41, 41, 42, 41, 42, 42, 41, 41, 42, 42, 42, 42, 41, 42, 42, 41, 42, 42, 42, 41, 42, 42, 42, 43, 43, 44, 44,
+45, 45, 45, 46, 47, 47, 48, 49, 49, 49, 50, 49, 48, 48, 47, 46, 46, 45, 43, 43, 42, 42, 42, 41, 41, 40, 39, 39, 38, 38, 37, 38, 37, 37, 39, 38, 39, 39, 39, 38,
+38, 39, 38, 38, 39, 38, 39, 39, 39, 39, 39, 39, 39, 38, 39, 39, 39, 39, 39, 39, 39, 39, 39, 38, 38, 38, 38, 38, 38, 38, 37, 38, 38, 37, 37, 36, 37, 36, 37, 36
+            };
+
+
+ /*           data = new int[] //100 with bugs inserted
+{
+44, 45, 45, 45, 46, 45, 46, 45, 46, 45, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 47, 46, 47, 46, 46, 47, 47, 46, 47, 47, 47, 47, 46, 46, 47, 46, 46, 46,
+46, 46, 45, 46, 46, 46, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 46, 46, 46, 46, 46, 45, 45, 45, 46, 46, 46, 45, 46, 45, 46, 46, 46, 45, 46,
+45, 46, 46, 46, 46, 45, 46, 46, 46, 46, 45, 46, 45, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 47, 47, 47, 46, 47, 46, 47, 46, 46, 47,
+46, 47, 47, 47, 48, 47, 47, 47, 48, 48, 48, 47, 48, 48, 49, 48, 49, 48, 49, 49, 49, 49, 49, 49, 49, 48, 48, 48, 47, 48, 48, 48, 47, 47, 46, 47, 47, 46, 47, 47,
+47, 47, 46, 46, 46, 47, 47, 47, 47, 47, 47, 47, 47, 46, 47, 47, 46, 46, 47, 47, 47, 47, 47, 47, 46, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 48, 47, 48, 48, 47,
+48, 47, 47, 47, 48, 48, 47, 47, 48, 48, 47, 48, 48, 48, 47, 48, 48, 48, 48, 48, 47, 48, 47, 48, 48, 48, 48, 48, 48, 47, 47, 48, 48, 48, 48, 48, 49, 49, 48, 49,
+49, 49, 50, 50, 50, 50, 50, 50, 50, 50, 50, 49, 48, 48, 48, 47, 47, 47, 47, 47, 47, 47, 46, 46, 46, 46, 45, 46, 46, 46, 45, 46, 46, 46, 46, 46, 47, 47, 47, 47,
+47, 47, 47, 47, 47, 47, 46, 46, 47, 47, 47, 47, 47, 47, 47, 47, 48, 48, 47, 47, 48, 48, 47, 48, 47, 48, 48, 48, 47, 48, 47, 47, 47, 48, 48, 48, 48, 48, 47, 48,
+47, 47, 47, 48, 48, 47, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 49, 49, 49, 49, 48, 49, 50, 50, 50, 50, 51, 51, 51, 51, 51, 52, 52, 52, 52, 51, 51, 51,
+50, 50, 50, 49, 49, 48, 48, 47, 48, 47, 47, 47, 46, 47, 46, 45, 46, 45, 45, 45, 46, 46, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 44, 45, 45, 44, 45, 45,
+45, 45, 45, 44, 45, 45, 45, 45, 45, 45, 45, 44, 45, 45, 44, 45, 45, 45, 44, 44, 45, 45, 44, 44, 45, 44, 44, 45, 45, 45, 45, 44, 45, 45, 45, 45, 45, 45, 45, 45,
+37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37,
+37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37,
+44, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 44, 44, 44, 44, 44, 44, 45, 44, 45, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44,
+45, 45, 44, 45, 45, 44, 44, 45, 45, 46, 45, 46, 46, 45, 45, 46, 46, 45, 44, 45, 44, 43, 44, 44, 43, 43, 42, 43, 43, 42, 41, 42, 41, 42, 42, 41, 42, 42, 41, 41,
+42, 42, 42, 41, 42, 42, 42, 42, 42, 42, 43, 43, 42, 43, 43, 42, 43, 42, 42, 42, 43, 43, 43, 43, 42, 42, 42, 42, 42, 43, 43, 42, 43, 43, 43, 43, 43, 43, 43, 43,
+43, 43, 42, 42, 43, 43, 43, 43, 42, 42, 43, 43, 43, 43, 43, 43, 43, 43, 43, 43, 44, 43, 44, 44, 44, 44, 44, 44, 44, 45, 44, 44, 46, 46, 46, 47, 46, 47, 48, 48,
+48, 48, 48, 47, 48, 47, 46, 46, 46, 45, 43, 44, 42, 42, 42, 42, 42, 41, 40, 41, 41, 40, 40, 40, 40, 40, 39, 40, 38, 39, 38, 38, 38, 39, 39, 39, 39, 38, 38, 38,
+37, 37, 38, 37, 38, 38, 37, 38, 37, 37, 38, 38, 38, 37, 37, 38, 37, 38, 38, 38, 38, 38, 37, 38, 37, 37, 37, 37, 37, 37, 37, 37, 37, 36, 37, 37, 36, 37, 36, 38,
+38, 38, 38, 37, 37, 38, 37, 38, 37, 38, 38, 38, 37, 38, 38, 39, 39, 39, 39, 40, 40, 40, 40, 41, 41, 42, 42, 43, 42, 43, 43, 44, 43, 43, 42, 42, 42, 41, 41, 41,
+40, 40, 40, 39, 39, 39, 39, 38, 38, 39, 39, 39, 39, 39, 39, 38, 39, 39, 38, 38, 38, 39, 39, 39, 39, 39, 39, 39, 39, 40, 40, 40, 40, 39, 40, 40, 40, 39, 40, 40,
+40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 39, 39, 39, 40, 40, 40, 39, 40, 40, 39, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 41, 41, 41, 41, 40, 41,
+41, 40, 41, 40, 41, 41, 41, 42, 42, 43, 43, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 44, 44, 44, 41, 41, 41, 41, 41, 41, 41, 41, 41,
+41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 42, 41, 41, 41, 41, 41, 41, 41, 42, 42, 42, 41, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+41, 41, 42, 42, 42, 42, 41, 42, 41, 42, 41, 42, 42, 41, 41, 42, 41, 42, 42, 41, 41, 42, 37, 37, 37, 37, 37, 37, 37, 42, 37, 37, 41, 37, 42, 37, 37, 37, 37, 37,
+45, 45, 45, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 39, 39, 38, 38, 37, 38, 37, 37, 37, 38, 37, 37, 37, 38,
+38, 39, 38, 38, 39, 38, 39, 39, 39, 39, 39, 39, 39, 38, 39, 39, 39, 39, 39, 39, 39, 39, 39, 38, 38, 38, 38, 38, 38, 38, 37, 38, 38, 37, 37, 36, 37, 36, 37, 36
+};*/
+
+            /*          data = new int[] //100 take 2
+                      {
+                          69, 69, 69, 69, 69, 70, 70, 70, 70, 70, 70, 70, 70, 70, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 72, 72, 72, 72, 72, 72, 72, 71, 71, 71, 71, 71, 71, 71,
+          70, 70, 70, 70, 70, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 70, 70, 70, 70, 70, 70,
+          70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 71, 71, 71, 71, 71, 71,
+          71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 72, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 70, 70, 70, 70, 70, 70, 70, 70, 69, 70, 69, 69,
+          69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 70, 70, 70, 70, 70, 70, 70, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71,
+          71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 72, 72, 72, 72, 72, 72, 72, 72, 73,
+          73, 73, 73, 73, 74, 74, 74, 74, 74, 74, 74, 74, 74, 74, 73, 73, 73, 73, 72, 72, 72, 72, 72, 72, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71,
+          71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71,
+          71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 72, 72, 72, 72, 72, 72, 72, 72, 72, 73, 73, 73, 73, 73, 74, 74, 74, 74, 75, 75, 75, 75,
+          74, 74, 74, 74, 73, 73, 73, 73, 72, 72, 72, 72, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 70, 71, 71, 70,
+          70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 71, 71, 71, 71, 70, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71,
+          71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 72, 72, 72, 72, 72, 72, 73, 73, 73, 74, 74, 74, 74, 74, 74, 74, 74, 74, 73, 73, 73, 72, 72, 72, 72, 71,
+          71, 71, 71, 71, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70,
+          70, 71, 70, 70, 71, 71, 70, 71, 71, 71, 71, 70, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 72,
+          72, 72, 72, 72, 72, 72, 72, 73, 73, 73, 73, 73, 74, 74, 74, 74, 75, 75, 75, 75, 74, 74, 74, 74, 73, 73, 73, 73, 72, 72, 72, 72, 72, 72, 71, 71, 71, 71, 71, 71,
+          71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71,
+          71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 72, 72, 72, 72, 72, 72, 72, 72, 72, 72, 73, 73, 73, 74, 74, 74,
+          74, 75, 75, 76, 76, 77, 77, 77, 77, 77, 76, 76, 75, 75, 74, 74, 74, 73, 73, 72, 72, 72, 72, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71,
+          71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71,
+          71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 72, 72, 72, 72, 72, 72, 73, 73, 73, 74, 74, 74, 75, 75, 75, 76, 76, 76, 76, 76,
+          76, 75, 75, 74, 74, 73, 73, 72, 72, 72, 71, 71, 71, 71, 71, 71, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 71, 70, 71, 71, 71, 71,
+          71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71,
+          71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 72, 72, 72, 73, 73, 74, 74, 75, 75, 76, 77, 77, 78, 78, 78, 78, 78, 78, 77, 76, 76, 75, 74, 74, 73, 73,
+          72, 72, 72, 71, 71, 71, 71, 71, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70,
+          70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 71, 70, 70, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71, 71,
+          71, 71, 71, 71, 72, 72, 72, 72, 73, 73, 74, 74, 75, 75, 76, 76, 77, 78, 78, 78, 78, 77, 77, 76, 75, 74, 74, 73, 73, 72, 72, 71, 71, 71, 70, 70, 70, 70, 70, 70,
+          70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 69, 70, 70, 70, 70, 70, 70, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 68, 68, 68, 68, 68
+                      };
+          */
+
+            float badValue = -9999f; //what value do we return in the array when we think there is a missing element there?
+
+            //first lets bottom out the data. This will help with figuring out the center of the peaks later.
+            int minVal = int.MaxValue;
+            foreach (int i in data)
+            {
+                if (i < minVal)
+                    minVal = i;
+            }
+            for (int i = 0; i < data.Length; i++)
+            {
+                data[i] -= minVal;
+            }
+
+
+            //then, we will filter out what parts of the data count as a part of a peak.
             int halfFreq = Mathf.RoundToInt((float)minPeakFreq/2f);
             int first = 0;
             int last = 0;
@@ -248,39 +495,112 @@ namespace hypercube
             //now we know what parts of the data are part of peaks. Let's arrange them into groups (peaks).
             //maxAllowedMissingDataPoints will be used to separate out the peaks from each other.
             List<List<int>> noisyPeaks = new List<List<int>>();    
-            int maxAllowedMissingDataPoints =  Mathf.RoundToInt((float)minPeakFreq / 10f);
-            if (maxAllowedMissingDataPoints < 3)
-                maxAllowedMissingDataPoints = 3;
+            int maxAllowedMissingDataPoints =  Mathf.RoundToInt(minPeakFreq / 5);
+            if (maxAllowedMissingDataPoints < 5)
+                maxAllowedMissingDataPoints = 5;
             int currentPeak = 0;
             noisyPeaks.Add(new List<int>());
             for (int d = 0; d < peakData.Count -1; d++)
             {
-                if (peakData[d + 1] - peakData[d] < maxAllowedMissingDataPoints)
-                    noisyPeaks[currentPeak].Add(peakData[d]);
-                else
+                noisyPeaks[currentPeak].Add(peakData[d]);
+
+                if (peakData[d + 1] - peakData[d] >= maxAllowedMissingDataPoints)
                 {
                     noisyPeaks.Add(new List<int>());
                     currentPeak++;
-                }
+                }               
             }
 
             //lets, ignore any peaks with very few data points (which are probably noise)
             List<List<int>> peaks = new List<List<int>>();
             for (int p = 0; p < noisyPeaks.Count; p++)
             {
-                if (noisyPeaks[p].Count >= 3)
+                if (noisyPeaks[p].Count >= 1)   //it's 1, so this is 'off' for now.
                     peaks.Add(noisyPeaks[p]);
             }
 
 
-            //now lets do a biased average of the data contained in each peak, and return that as our final values.
-            List<float> output = new List<float>();
+            //now lets do a biased average of the data contained in each peak, and prepare to return that as our final values.
+            List<float> candidates = new List<float>();
             foreach (List<int> p in peaks)
             {
-                output.Add(findPeakInDataPoints(p, data, .8f));
+                candidates.Add(findPeakInDataPoints(p, data, 10f));
             }
 
-            return output.ToArray();
+
+            //finally, lets do a check to make sure that the peaks are evenly distributed, removing or replacing any that are not;
+            //so first we do a diff comparison between all of them.
+            //then remove any where the differences were more than 15% of the rest and do it again.
+            float allowedDeviation = .13f;
+            List<float> differences = new List<float>();
+            for (int i = 0; i < candidates.Count -1; i ++)
+            {
+                differences.Add(candidates[i + 1] - candidates[i]);
+            }
+            float[] outliers;
+            int medianIndex = 0;
+            float medianDiff = findOutliers(differences, allowedDeviation, out outliers, out medianIndex);
+
+            //now lets go through them again, this time having some statistical info in hand (median values)                  
+            float startingOffset = candidates[medianIndex] % medianDiff; //as best we can know, the medianDiff and medianIndex are well placed data, so lets use them as a base point to check the rest.
+                
+            //compare our found peaks to where we expect them to be based on the median info. namely, at a mostly steady distance from each other (within allowedDeviation).
+            List<float> output = new List<float>();            
+            for (int i = 0; i < expectedPeaks; i++)
+            {
+                float expectedVal = startingOffset + (i * medianDiff);
+                bool foundMatch = false;
+                for (int c = 0; c < candidates.Count; c++)
+                {
+                    float testDiff = candidates[i] > expectedVal ? candidates[i] - expectedVal : expectedVal - candidates[i];
+                    if (testDiff <= medianDiff * allowedDeviation)
+                    {
+                        output.Add(candidates[i]);
+                        foundMatch = true;
+                        break;
+                    }
+                }
+
+                if (!foundMatch)
+                    output.Add(badValue); 
+            }
+
+            int missingElements = expectedPeaks - output.Count; //add any missing.
+            for (int i = 0; i < missingElements; i++)
+            {
+                    output.Add(badValue);
+            }
+
+                return output.ToArray();
+        }
+
+        //returns the median difference. outlying values are given in 'outliers'
+        static float findOutliers(List<float> data, float allowedDeviation, out float[] outliers, out int medianIndex)
+        {
+            float[] sorted = data.ToArray();
+            System.Array.Sort(sorted);
+
+            int medianElement = Mathf.RoundToInt(sorted.Length/2f);
+            float median = sorted[medianElement];
+
+            List<float> badElements = new List<float>();
+            foreach (float f in sorted)
+            {
+                float diff = f > median ? f - median : median - f;
+                if (diff > median * allowedDeviation)
+                    badElements.Add(f);
+            }
+
+            outliers = badElements.ToArray();
+
+            medianIndex = 0;
+            for (int d = 0; d < data.Count; d++)
+            {
+                if (data[d] == median)
+                    medianIndex = d;
+            }
+
+            return median;
         }
 
         static bool checkPeak(int first, int middle, int last, int threshold)
@@ -288,17 +608,17 @@ namespace hypercube
             if (middle - first > threshold && middle - last > threshold)
                 return true;
             return false;
-        }
-
-        // use a weighted average to find the peak
+        }       
         static float findPeakInDataPoints(List<int> dataPoints, int[] allData, float bias)
         {
+            // use a weighted average to find the peak
             double total = 0;
             double div = 0;
             foreach (int d in dataPoints)
             {
-                total += d * allData[d];
-                div += allData[d];
+                double pow = Mathf.Pow(allData[d], bias);
+                total += d * pow;
+                div += pow;
             }
             return (float)(total/div);
         }
