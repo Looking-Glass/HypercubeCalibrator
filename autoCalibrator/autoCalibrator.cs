@@ -45,6 +45,10 @@ namespace hypercube
         {
             return recordedData.ToArray();
         }
+        public float[] getAllPixelMeasurements()
+        {
+            return pixel.ToArray();
+        }
 
         public int getData(int element)
         {
@@ -64,26 +68,6 @@ namespace hypercube
                 return 0f;
             return timeRecorded[element];
         }
-
-        public void printData(string labelString) //for debug use
-        {
-            string output = labelString + ":\n";
-            for (int i = 0; i < recordedData.Count; i++)
-            {
-                output +=  recordedData[i] + ", ";
-            }
-            Debug.Log(output);
-        }
-        public void printCSV(string outPath) //for debug use.
-        {
-            string output = "";
-            for (int i = 0; i < recordedData.Count; i++)
-            {
-                output += pixel[i] +","+ recordedData[i] +"\n"; 
-            }
-            System.IO.File.WriteAllText(outPath, output);
-            Debug.Log("Wrote data to CSV: " + outPath);
-        }
     }
 
     public class autoCalibrator : MonoBehaviour
@@ -97,12 +81,18 @@ namespace hypercube
         public GameObject[] indicators;
 
         SerialController serial;
-        public float threshold = .7f;
+   
+        //TODO these should be set from calibrator gui!
+        public int minPeakFreq = 1;// The minimum 'height' a peak should be.</param>
+        public int minPeakAmplitude = 60;
+        public float allowedDeviation = .13f; //any data found outside of outlierBias * median will be ignored.
 
         public GameObject gradientLine;
         public GameObject gradientMesh;
 
         public castMesh canvas;
+
+        public bool debug = true;
 
         autoCalibratorModule currentModule;
 
@@ -115,10 +105,21 @@ namespace hypercube
         void Awake()
         {
             inline = new sampleLines_inline();
+
+            int childCount = transform.childCount;
+            indicators = new GameObject[childCount];
+            for (int c = 0; c < childCount; c++)
+            {
+                indicators[c] = transform.GetChild(c).gameObject;
+            }
+            
         }
 
         void Start()
         {
+            records = new sensorData[xArticulation * yArticulation];
+            resetCollectedData();
+
             setModule(inline);  //TEMP!!!  this should be set from a gui option
 
             //set up comm to our light sensors in the hardware
@@ -131,8 +132,6 @@ namespace hypercube
 
             //dataFileDict vars = canvas.GetComponent<dataFileDict> ();
 
-            records = new sensorData[xArticulation * yArticulation];
-            resetCollectedData();
         }
 
         public sensorData getRecord(int x, int y)
@@ -239,27 +238,27 @@ namespace hypercube
             return new Vector3((2f * x * pixelX * aspectRatio) - (pixelX * screenX * aspectRatio), 1f - (y * pixelY * 2f), 0f);
         }
 
-        /// <param name="minPeakAmplitude">The minimum 'height' a peak should be.</param>
+        /// <param name="minPeakAmplitude">
         /// <param name="minPeakFreq">The minimum 'width' of expected peaks. This will keep it from returning noise as peaks.</param>
-        public float[] findDataPeaks(int minPeakAmplitude, int minPeakFreq, int expectedPeaks, int x, int y)
+        public float[] findDataPeaks(int expectedPeaks, int xSensor, int ySensor)
         {
-            sensorData d = getRecord(x,y);
+            sensorData d = getRecord(xSensor, ySensor);
             if (d == null)
                 return null;
 
-            return getPeaksFromData(minPeakAmplitude, minPeakFreq, expectedPeaks, d.getAllData());
+            return getPeaksFromData(minPeakAmplitude, minPeakFreq, expectedPeaks, allowedDeviation, d.getAllData());
         }
 
         /// <summary>
         /// This method will extract 'peaks' from noisy data, returning the positions in the array where it thinks the peaks occurred.
         /// Note that the returned values are floats: It uses averages to figure out where it thinks the true peak is which may lie 'in between' the given data points.
-        /// finally, it will return the given number of expected peaks, with 0 as the value for any peeks it could not determine.
+        /// finally, it will return the given number of expected peaks, using -9999 to represent peaks it could not determine.
         /// </summary>
         /// <param name="minPeakAmplitude">The minimum 'height' a peak should be.</param>
         /// <param name="minPeakFreq">The minimum 'width' of expected peaks. This will keep it from returning noise as peaks.</param>
         /// <param name="data">The data to obtain the peaks from.</param>
         /// <returns></returns>
-        public static float[] getPeaksFromData(int minPeakAmplitude, int minPeakFreq, int expectedPeaks, int[] data)
+        public static float[] getPeaksFromData(int minPeakAmplitude, int minPeakFreq, int expectedPeaks, float allowedDeviation, int[] data)
         {
             data = new int[] //600ms
             {
@@ -531,7 +530,6 @@ namespace hypercube
             //finally, lets do a check to make sure that the peaks are evenly distributed, removing or replacing any that are not;
             //so first we do a diff comparison between all of them.
             //then remove any where the differences were more than 15% of the rest and do it again.
-            float allowedDeviation = .13f;
             List<float> differences = new List<float>();
             for (int i = 0; i < candidates.Count -1; i ++)
             {
@@ -574,9 +572,10 @@ namespace hypercube
                 return output.ToArray();
         }
 
-        //returns the median difference. outlying values are given in 'outliers'
+        
         static float findOutliers(List<float> data, float allowedDeviation, out float[] outliers, out int medianIndex)
         {
+            //returns the median difference. outlying values are given in 'outliers'
             float[] sorted = data.ToArray();
             System.Array.Sort(sorted);
 
@@ -602,7 +601,6 @@ namespace hypercube
 
             return median;
         }
-
         static bool checkPeak(int first, int middle, int last, int threshold)
         {
             if (middle - first > threshold && middle - last > threshold)

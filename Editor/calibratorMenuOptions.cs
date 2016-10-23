@@ -25,7 +25,7 @@ namespace hypercube
         {
 
             //float[] output = autoCalibrator.getPeaksFromData(7, 60, new int[0]); //600ms
-            float[] output = autoCalibrator.getPeaksFromData(1, 60, 10, new int[0]); //100ms
+            float[] output = autoCalibrator.getPeaksFromData(1, 60, 10, .13f, new int[0]); //100ms
             string s = "";
             foreach (float d in output)
             {
